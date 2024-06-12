@@ -28,46 +28,32 @@ pub mod crt;
 pub mod install;
 type HttpBody = BoxBody<Bytes, hyper::Error>;
 
-pub struct HttpServer {
-    addr: SocketAddr,
-    shutdown_tx: Option<watch::Sender<bool>>,
-    handle: Option<tokio::task::JoinHandle<Result<()>>>,
-}
+#[tokio::main]
+pub async fn main() -> Result<()> {
+    // This address is localhost
+    let addr: SocketAddr = "127.0.0.1:7999".parse().unwrap();
+    let _ = install_cert();
+    let is_check = check_cert();
+    // let delete_cert = delete_cert();
 
-impl HttpServer {
-    pub fn new(addr: SocketAddr) -> Self {
-        HttpServer {
-            addr,
-            shutdown_tx: None,
-            handle: None,
-        }
-    }
+    println!("cert: {:?}", is_check);
+    // Create a channel to signal shutdown
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    pub async fn start(&mut self) -> Result<()> {
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        self.shutdown_tx = Some(shutdown_tx);
+    // Create a task for the listener
+    let listener_task = tokio::spawn(run_listener(addr, shutdown_rx));
 
-        let addr = self.addr;
-        let listener_task = tokio::spawn(async move {
-            run_listener(addr, shutdown_rx).await
-        });
+    // Manually trigger shutdown
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        println!("Sending shutdown signal");
+        shutdown_tx.send(true).unwrap();
+    });
 
-        self.handle = Some(listener_task);
+    // Wait for the listener task to finish
+    listener_task.await??;
 
-        Ok(())
-    }
-
-    pub async fn stop(&mut self) -> Result<()> {
-        if let Some(shutdown_tx) = &self.shutdown_tx {
-            shutdown_tx.send(true)?;
-        }
-
-        if let Some(handle) = self.handle.take() {
-            handle.await??;
-        }
-
-        Ok(())
-    }
+    Ok(())
 }
 
 async fn run_listener(addr: SocketAddr, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
@@ -103,6 +89,7 @@ async fn handle_connection(tcp_stream: TcpStream) {
         println!("Error serving connection: {:?}", err);
     }
 }
+
 
 fn get_host_port(host_name: &str) -> (&str, u16) {
     match host_name.find(":") {
@@ -362,27 +349,4 @@ async fn intercept_response(mut response: Response<Incoming>) -> Response<HttpBo
         });
         resp
     }
-}
-
-// Main function to start and stop the server
-#[tokio::main]
-pub async fn main() -> Result<()> {
-    // This address is localhost
-    let addr: SocketAddr = "127.0.0.1:7999".parse().unwrap();
-    let _ = install_cert();
-    let is_check = check_cert();
-    // let delete_cert = delete_cert();
-
-    println!("cert: {:?}", is_check);
-
-    let mut server = HttpServer::new(addr);
-    server.start().await?;
-    println!("Server started");
-
-    // 模拟一段时间后停止服务器
-    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-    server.stop().await?;
-    println!("Server stopped");
-
-    Ok(())
 }
