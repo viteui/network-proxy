@@ -12,6 +12,8 @@ use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{header, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use install::check_cert;
+use install::delete_cert;
 use install::install_cert;
 use openssl::ssl::{Ssl, SslAcceptor, SslConnector, SslMethod, SslVerifyMode};
 use std::error::Error;
@@ -30,6 +32,10 @@ pub async fn main() -> Result<()> {
     // This address is localhost
     let addr: SocketAddr = "127.0.0.1:7999".parse().unwrap();
     let _ = install_cert();
+    let is_check = check_cert();
+    // let delete_cert = delete_cert();
+
+    println!("cert: {:?}", is_check);
     // Bind to the port and listen for incoming TCP connections
     let listener = TcpListener::bind(addr).await?;
     println!("Listening on http://{}", addr);
