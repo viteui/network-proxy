@@ -13,13 +13,12 @@ use hyper::upgrade::Upgraded;
 use hyper::{header, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use install::check_cert;
+use install::delete_cert;
 use install::install_cert;
 use openssl::ssl::{Ssl, SslAcceptor, SslConnector, SslMethod, SslVerifyMode};
-use tokio::sync::watch;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_openssl::SslStream;
@@ -28,79 +27,40 @@ pub mod crt;
 pub mod install;
 type HttpBody = BoxBody<Bytes, hyper::Error>;
 
-pub struct HttpServer {
-    addr: SocketAddr,
-    shutdown_tx: Option<watch::Sender<bool>>,
-    handle: Option<tokio::task::JoinHandle<Result<()>>>,
-}
+#[tokio::main]
+pub async fn main() -> Result<()> {
+    // This address is localhost
+    let addr: SocketAddr = "127.0.0.1:7999".parse().unwrap();
+    let _ = install_cert();
+    let is_check = check_cert();
+    // let delete_cert = delete_cert();
 
-impl HttpServer {
-    pub fn new(addr: SocketAddr) -> Self {
-        HttpServer {
-            addr,
-            shutdown_tx: None,
-            handle: None,
-        }
-    }
+    println!("cert: {:?}", is_check);
+    // Bind to the port and listen for incoming TCP connections
+    let listener = TcpListener::bind(addr).await?;
 
-    pub async fn start(&mut self) -> Result<()> {
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        self.shutdown_tx = Some(shutdown_tx);
+    println!("Listening on http://{}", addr);
+    loop {
+        println!("{:?}", "loop");
+        let (tcp_stream, addr) = listener.accept().await?;
+        
+        let _msg = format!("{addr} connected");
+        //dbg!(msg);
+        tokio::task::spawn(async move {
+            let io = TokioIo::new(tcp_stream);
 
-        let addr = self.addr;
-        let listener_task = tokio::spawn(async move {
-            run_listener(addr, shutdown_rx).await
+            let conn = http1::Builder::new().serve_connection(io, service_fn(handle));
+
+            // Don't forget to enable upgrades on the connection.
+            let mut conn = conn.with_upgrades();
+
+            let conn = Pin::new(&mut conn);
+            if let Err(err) = conn.await {
+                println!("Error serving connection: {:?}", err);
+            }
+        
         });
 
-        self.handle = Some(listener_task);
-
-        Ok(())
-    }
-
-    pub async fn stop(&mut self) -> Result<()> {
-        if let Some(shutdown_tx) = &self.shutdown_tx {
-            shutdown_tx.send(true)?;
-        }
-
-        if let Some(handle) = self.handle.take() {
-            handle.await??;
-        }
-
-        Ok(())
-    }
-}
-
-async fn run_listener(addr: SocketAddr, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    println!("Listening on http://{}", addr);
-
-    while !*shutdown_rx.borrow() {
-        tokio::select! {
-            _ = shutdown_rx.changed() => {
-                println!("Shutdown signal received");
-                break;
-            }
-            Ok((tcp_stream, addr)) = listener.accept() => {
-                println!("{:?} connected", addr);
-                tokio::task::spawn(handle_connection(tcp_stream));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn handle_connection(tcp_stream: TcpStream) {
-    let io = TokioIo::new(tcp_stream);
-
-    let conn = http1::Builder::new().serve_connection(io, service_fn(handle));
-
-    // Don't forget to enable upgrades on the connection.
-    let mut conn = conn.with_upgrades();
-
-    let conn = Pin::new(&mut conn);
-    if let Err(err) = conn.await {
-        println!("Error serving connection: {:?}", err);
     }
 }
 
@@ -119,7 +79,7 @@ fn not_found_host() -> Response<HttpBody> {
 }
 
 /// Our server HTTP handler to initiate HTTP upgrades.
-async fn handle(mut req: Request<Incoming> ) -> Result<Response<HttpBody>> {
+async fn handle(mut req: Request<Incoming>) -> Result<Response<HttpBody>> {
     if req.method() != hyper::Method::CONNECT {
         let (host, port) = match req.headers().get(header::HOST) {
             None => {
@@ -362,27 +322,4 @@ async fn intercept_response(mut response: Response<Incoming>) -> Response<HttpBo
         });
         resp
     }
-}
-
-// Main function to start and stop the server
-#[tokio::main]
-pub async fn main() -> Result<()> {
-    // This address is localhost
-    let addr: SocketAddr = "127.0.0.1:7999".parse().unwrap();
-    let _ = install_cert();
-    let is_check = check_cert();
-    // let delete_cert = delete_cert();
-
-    println!("cert: {:?}", is_check);
-
-    let mut server = HttpServer::new(addr);
-    server.start().await?;
-    println!("Server started");
-
-    // 模拟一段时间后停止服务器
-    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-    server.stop().await?;
-    println!("Server stopped");
-
-    Ok(())
 }
